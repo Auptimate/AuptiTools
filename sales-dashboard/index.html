@@ -25,6 +25,9 @@ h1,h2,h3,h4{font-weight:400;} strong{color:var(--navy);font-weight:600;} [title]
 .data-status .sdot{width:8px;height:8px;border-radius:50%;background:#bbb;flex:0 0 auto;}
 .data-status.live{color:var(--green);border-color:#bcdcc9;background:#f0f9f4;} .data-status.live .sdot{background:var(--green);}
 .data-status.snap{color:#8a6d3b;border-color:#e6d8bf;background:#fbf6ec;} .data-status.snap .sdot{background:#C77D2E;}
+.data-warn{background:#fff4f8;border:1px solid var(--pink);border-left:5px solid var(--pink);border-radius:8px;padding:11px 15px;margin:0 0 18px;font-size:12.5px;color:var(--grey);}
+.data-warn strong{color:var(--pink);} .data-warn code{background:#fff;border:1px solid var(--border);border-radius:3px;padding:0 4px;font-size:11.5px;color:var(--navy);}
+.data-warn .wsrc{color:#999;}
 .headline{background:var(--navy);color:#fff;border-radius:12px;padding:22px 26px;margin:0 0 26px;}
 .hl-eyebrow{color:#fff;opacity:.7;font-weight:700;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;}
 .hl-verdict{font-size:15.5px;line-height:1.55;margin:0 0 16px;color:#eef;}
@@ -142,6 +145,7 @@ h1,h2,h3,h4{font-weight:400;} strong{color:var(--navy);font-weight:600;} [title]
   <h1 class="doc-title">2026 Revenue &amp; Pipeline</h1>
   <p class="doc-sub">Read the headline first; every claim links to the section that backs it. Live from the Drive source files.</p>
   <div id="dataStatus" class="data-status"><span class="sdot"></span>Loading live data…</div>
+  <div id="dataWarn" class="data-warn" style="display:none"></div>
 
   <div class="headline">
     <div class="hl-eyebrow">The bottom line</div>
@@ -255,8 +259,8 @@ h1,h2,h3,h4{font-weight:400;} strong{color:var(--navy);font-weight:600;} [title]
       <li><strong>Deals</strong> file — open pipeline &amp; every closed (won/lost) deal (name, product, target month, total value, weighted value, stage).</li>
       <li><strong>Billed</strong> file — reconciled invoiced revenue by client, product, month (USD).</li>
       <li><strong>Quota</strong> file — monthly sales target.</li>
-      <li><strong>Plan</strong> file <em>(optional)</em> — Product | Deals | Value Each. If present it drives the rest-of-year plan; otherwise the built-in plan is used.</li>
-      <li><strong>Refresh:</strong> on request — the three files are pulled, rules applied, dashboard rebuilt. Every figure traces to a row.</li>
+      <li><strong>Plan</strong> file <em>(optional)</em> — Product | Deals | Value Each. If present it drives the rest-of-year plan and the recommended actions; otherwise the built-in plan is used. Product names must match the list in Definitions.</li>
+      <li><strong>Refresh:</strong> the dashboard fetches all sheets from a single read-only Apps Script feed <strong>on every page load</strong> and re-applies the rules in the browser — edit a sheet, reload, done. The badge at the top reports whether you are seeing live data or the built-in snapshot fallback, and when the sheets were last edited. Every figure traces to a row.</li>
     </ul></div>
   </div>
 
@@ -288,7 +292,7 @@ h1,h2,h3,h4{font-weight:400;} strong{color:var(--navy);font-weight:600;} [title]
     <div class="callout"><ul>
       <li><strong>Pipeline = open stages only</strong> (Discovery, Deal Qualified, Account Activation, Account Activated); Closed Won &amp; Closed Lost excluded. <strong>Elapsed months carry no pipeline</strong> — the closed/open split is derived from today's date, not hardcoded.</li>
       <li><strong>Product mapping:</strong> Holding SPV → Custom Service, Fund → Fund Admin. <strong>Nova and Nova+ tracked together</strong> (no separate Nova+ history).</li>
-      <li><strong>Required coverage &gt; 3×:</strong> your 23.5% win rate is below the 33% the 3× rule assumes, so your required coverage (4.3×) sits above the benchmark — 3× is the reference, 4.3× is the target.</li>
+      <li id="asmCoverage"></li>
       <li><strong>Win rates</strong> from <strong>every decided deal</strong> in the Deals sheet, so they re-rate automatically as deals close (no fixed window). Products with n&lt;3 fall back to the <strong>blended rate</strong>; n is shown next to each so thin samples are visible.</li>
       <li><strong>Monthly fill, two lenses:</strong> Face = weighted pipeline; Adjusted = <strong>total</strong> value × win rate (applied to total, not weighted, to avoid double-discounting).</li>
       <li><strong>Projection:</strong> Worst seeded from the per-product win rate; Base editable; Best = 100%. "Locked" = invoiced.</li>
@@ -336,11 +340,24 @@ const QUARTERS=["Q1","Q2","Q3","Q4"];
 const NAVY="#1B2A6B",PINK="#E8006B",GREY="#595959",BORDER="#D0D0D0",GREEN="#1a7f4b",SHORT="#C7CEE6";
 const billedMonthlyOf=B=>MONTHS.map((_,j)=>B.reduce((s,r)=>s+r[j],0));
 let state={period:"month",basis:"face",funnelMode:"need"};
-const fmt=v=>"$"+Math.round(v).toLocaleString("en-US");
-const fmtC=v=>{v=Math.round(v);var a=Math.abs(v);return a>=1e6?"$"+(v/1e6).toFixed(2)+"M":a>=1e4?"$"+Math.round(v/1e3)+"K":"$"+v.toLocaleString("en-US");};
-const fmtSigned=v=>(v<0?"-":"+")+"$"+Math.round(Math.abs(v)).toLocaleString("en-US");
-const pct=v=>(v*100).toFixed(1)+"%";
-const mult=v=>v.toFixed(2)+"\u00d7";
+/* isFinite guard: any of these can receive NaN/Infinity from an unguarded division
+   (e.g. 0/0 when a product or period has no data at all). Rather than patch every
+   call site, every formatter falls back to a muted placeholder instead of
+   rendering "$NaN" / "$Infinity" / "NaN%" in front of a user. */
+const NA="<span class=\"muted-cell\">\u2013</span>";
+const isNum=v=>typeof v==="number"&&isFinite(v);
+const fmt=v=>isNum(v)?"$"+Math.round(v).toLocaleString("en-US"):NA;
+const fmtC=v=>{if(!isNum(v))return NA;v=Math.round(v);var a=Math.abs(v);return a>=1e6?"$"+(v/1e6).toFixed(2)+"M":a>=1e4?"$"+Math.round(v/1e3)+"K":"$"+v.toLocaleString("en-US");};
+const fmtSigned=v=>isNum(v)?(v<0?"-":"+")+"$"+Math.round(Math.abs(v)).toLocaleString("en-US"):NA;
+const pct=v=>isNum(v)?(v*100).toFixed(1)+"%":NA;
+const mult=v=>isNum(v)?v.toFixed(2)+"\u00d7":NA;
+/* safeDiv: use for any ratio that feeds further math or a threshold comparison
+   (not just display), so a 0/0 can't silently become NaN and break downstream logic. */
+const safeDiv=(n,d,f)=>{f=(f===undefined)?0:f;return d?n/d:f;};
+/* esc: HTML-escape any string sourced from the live feed (sheet cell values) before
+   it is concatenated into innerHTML, so a stray "<" in a product/deal name from the
+   source spreadsheet can't inject markup into the rendered page. */
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const labels=()=>state.period==="month"?MONTHS:(state.period==="quarter"?QUARTERS:["FY2026"]);
 function toPeriods(a){if(state.period==="month")return a.slice();if(state.period==="quarter")return[0,1,2,3].map(q=>a[q*3]+a[q*3+1]+a[q*3+2]);return[a.reduce((x,y)=>x+y,0)];}
 const showFY=()=>state.period!=="year";
@@ -427,12 +444,12 @@ function renderCoverage(){
 function renderMix(){
   const billedFY=BILLED.map(r=>r.reduce((a,b)=>a+b,0));
   const bT=billedFY.reduce((a,b)=>a+b,0), pT=PIPE_PROD_VAL.reduce((a,b)=>a+b,0);
-  document.getElementById("mixLead").innerHTML=`Billed is <strong>Syndicate-led (${pct(billedFY[1]/bT)})</strong>; pipeline is <strong>Nova-led (${pct(PIPE_PROD_VAL[4]/pT)})</strong>. Weight new pipeline toward proven revenue.`;
+  document.getElementById("mixLead").innerHTML=`Billed is <strong>Syndicate-led (${pct(safeDiv(billedFY[1],bT,null))})</strong>; pipeline is <strong>Nova-led (${pct(safeDiv(PIPE_PROD_VAL[4],pT,null))})</strong>. Weight new pipeline toward proven revenue.`;
   const rows=PRODUCTS.map((p,i)=>({p,c:PCOLORS[i],b:billedFY[i],pv:PIPE_PROD_VAL[i]})).sort((a,b)=>b.b-a.b);
-  const sig=(b,pv)=>{var bm=b/bT,pm=pv/pT,d=bm-pm;if(b>0&&pv===0)return['Cliff — no pipeline','cliff'];if(pv>0&&b===0)return['Unproven — validate','validate'];if(d>=0.10)return['Under-pipelined — build','build'];if(d<=-0.10)return['Over-indexed — validate','validate'];return['Balanced','bal'];};
+  const sig=(b,pv)=>{var bm=safeDiv(b,bT,0),pm=safeDiv(pv,pT,0),d=bm-pm;if(b>0&&pv===0)return['Cliff — no pipeline','cliff'];if(pv>0&&b===0)return['Unproven — validate','validate'];if(d>=0.10)return['Under-pipelined — build','build'];if(d<=-0.10)return['Over-indexed — validate','validate'];return['Balanced','bal'];};
   const m=`<span class="muted-cell">\u2013</span>`;
   let h=`<thead><tr><th>Product</th><th>Billed mix</th><th>Pipe mix</th><th style="text-align:left">Signal</th></tr></thead><tbody>`;
-  rows.forEach(r=>{var s=sig(r.b,r.pv);h+=`<tr><td class="pname"><span class="dot" style="background:${r.c}"></span>${r.p}</td><td>${r.b?pct(r.b/bT):m}</td><td>${r.pv?pct(r.pv/pT):m}</td><td style="text-align:left" class="sig ${s[1]}">${s[0]}</td></tr>`;});
+  rows.forEach(r=>{var s=sig(r.b,r.pv);h+=`<tr><td class="pname"><span class="dot" style="background:${r.c}"></span>${r.p}</td><td>${r.b?pct(safeDiv(r.b,bT,null)):m}</td><td>${r.pv?pct(safeDiv(r.pv,pT,null)):m}</td><td style="text-align:left" class="sig ${s[1]}">${s[0]}</td></tr>`;});
   document.getElementById("mixRecTable").innerHTML=h+`</tbody>`;
 }
 function renderPlan(){
@@ -456,7 +473,7 @@ function renderFill(){
   const uniform=targets.every(t=>t===targets[0]);
   const totals=OPEN_IDX.map(j=>PRODUCTS.reduce((s,_,i)=>s+cell(i,j),0)), grand=totals.reduce((a,b)=>a+b,0);
   document.getElementById("fillLead").innerHTML=adj?`Total deal value × each product's win rate (base-rate view). Thin-sample products use the blended ${pct(BLEND_VAL)}.`:`Weighted pipeline as-is (stage probability already applied). Each month needs ${uniform?fmtC(targets[0]):"its monthly quota"} (dashed line).`;
-  const maxV=Math.max(Math.max(...targets),...totals)*1.12,y=v=>mt+pH-(v/maxV)*pH,slot=plotW/n,bw=Math.min(46,slot*0.5);
+  const maxV=Math.max(Math.max(...targets),...totals,1)*1.12,y=v=>mt+pH-(v/maxV)*pH,slot=plotW/n,bw=Math.min(46,slot*0.5);
   let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">`;
   for(let g=0;g<=4;g++){const gv=maxV*g/4,gy=y(gv);s+=`<line x1="${ml}" y1="${gy}" x2="${W-mr}" y2="${gy}" stroke="${BORDER}" stroke-width="1"/><text x="${ml-8}" y="${gy+4}" text-anchor="end" font-size="10" fill="${GREY}">$${Math.round(gv/1000)}k</text>`;}
   OPEN_IDX.forEach((mj,j)=>{const cx=ml+slot*j+slot/2,x=cx-bw/2;let yc=mt+pH;PRODUCTS.forEach((_,i)=>{const v=cell(i,mj);if(v>0){const hh=(v/maxV)*pH;yc-=hh;s+=`<rect x="${x}" y="${yc}" width="${bw}" height="${hh}" fill="${PCOLORS[i]}"/>`;}});s+=`<text x="${cx}" y="${H-mb+18}" text-anchor="middle" font-size="11" fill="${GREY}" font-weight="600">${MONTHS[mj]}</text>`;if(!uniform){const tyv=y(targets[j]);s+=`<line x1="${cx-bw/2-6}" y1="${tyv}" x2="${cx+bw/2+6}" y2="${tyv}" stroke="${PINK}" stroke-width="2" stroke-dasharray="5,3"/>`;}});
@@ -473,9 +490,9 @@ function renderFill(){
 }
 function renderWin(){
   let h=`<thead><tr><th>Product</th><th>Plan wins</th><th title="Across all decided deals. n = sample size.">Win rate (n)</th><th title="plan wins / win rate">Deals needed</th><th>Open now</th><th>Gap</th></tr></thead><tbody>`;
-  [1,4,5].forEach(i=>{const wins=PLAN_DEALS[i],n=WR_N[i],have=PIPE_PROD_DEALS[i],thin=n<3,wc=WR_CNT[i],need=Math.round(wins/wc);
+  [1,4,5].forEach(i=>{const wins=PLAN_DEALS[i],n=WR_N[i],have=PIPE_PROD_DEALS[i],thin=n<3,wc=WR_CNT[i],need=wc>0?Math.round(wins/wc):null;
     const rateCell=`${pct(wc)} <span class="muted-cell">${thin?'blended · ':''}n=${n}</span>`;
-    h+=`<tr><td class="pname"><span class="dot" style="background:${PCOLORS[i]}"></span>${PRODUCTS[i]}</td><td>${wins}</td><td style="text-align:left">${rateCell}</td><td>${need}</td><td>${have}</td><td class="neg">${have-need}</td></tr>`;});
+    h+=`<tr><td class="pname"><span class="dot" style="background:${PCOLORS[i]}"></span>${PRODUCTS[i]}</td><td>${wins}</td><td style="text-align:left">${rateCell}</td><td>${need==null?NA:need}</td><td>${have}</td><td class="neg">${need==null?NA:(have-need)}</td></tr>`;});
   document.getElementById("winTable").innerHTML=h+`</tbody><tfoot><tr class="total"><td colspan="6" style="text-align:left;font-weight:400;font-size:12px">Thin-sample products (n&lt;3) use the blended ${pct(BLEND_CNT)} count rate — direction, not precision.</td></tr></tfoot>`;
 }
 function computeProjection(){
@@ -519,7 +536,7 @@ function stateTable(){
   const m=`<span class="muted-cell">\u2013</span>`;
   let h=`<thead><tr><th>Product</th><th>Billed (FY)</th><th>Billed mix</th><th>Open pipeline</th><th>Pipe mix</th><th>Deals</th><th>Avg deal</th><th>Flag</th></tr></thead><tbody>`;
   rows.forEach(r=>{h+=`<tr><td class="pname"><span class="dot" style="background:${r.c}"></span>${r.p}</td><td>${r.b?fmt(r.b):m}</td><td>${r.b?pct(r.b/bT):m}</td><td>${r.pv?fmt(r.pv):m}</td><td>${r.pv?pct(r.pv/pT):m}</td><td>${r.d||m}</td><td>${r.d?fmt(r.pv/r.d):m}</td><td class="flag-cell" contenteditable="true"></td></tr>`;});
-  document.getElementById("stateTable").innerHTML=h+`</tbody><tfoot><tr class="total"><td>Total</td><td>${fmt(bT)}</td><td>100%</td><td>${fmt(pT)}</td><td>100%</td><td>${dT}</td><td>${fmt(pT/dT)}</td><td></td></tr></tfoot>`;
+  document.getElementById("stateTable").innerHTML=h+`</tbody><tfoot><tr class="total"><td>Total</td><td>${fmt(bT)}</td><td>${bT?"100%":m}</td><td>${fmt(pT)}</td><td>${pT?"100%":m}</td><td>${dT}</td><td>${dT?fmt(pT/dT):m}</td><td></td></tr></tfoot>`;
 }
 function renderFunnel(){
   const gr=(id,d)=>{var v=parseFloat(document.getElementById(id).value);return(isNaN(v)||v<=0)?d:v/100;};
@@ -579,8 +596,10 @@ function renderFunnel(){
     document.getElementById("funnelNote").innerHTML=`<strong>${mqls.toLocaleString("en-US")} leads</strong> at these rates yields <strong>${sqls} SQLs → ${wins} wins</strong> — ${gap>=0?`<span class="pos">${gap} above</span>`:`<span class="neg">${-gap} below</span>`} the ${planWins}-win plan. ${gap<0?`You miss the ${oppsNeeded}-SQL threshold; raise a conversion rate or the lead budget to close it.`:`You clear the ${oppsNeeded}-SQL threshold.`}`;
   }
 }
+function updateAssumptions(){var el=document.getElementById("asmCoverage");if(!el)return;
+  el.innerHTML="<strong>Required coverage vs the 3\u00d7 rule:</strong> the 3\u00d7 benchmark implicitly assumes about 1-in-3 converts (33%). Your blended win rate is <strong>"+pct(HIST_WR)+"</strong> across "+WR_TOTAL_N+" decided deals, so your required coverage is <strong>"+REQ_COV.toFixed(1)+"\u00d7</strong> ("+(HIST_WR<1/3?"above":"below")+" the benchmark). 3\u00d7 is the reference; "+REQ_COV.toFixed(1)+"\u00d7 is the target. Both move as the win rate moves.";}
 function updateProjNote(){var el=document.getElementById("asOfLabel");if(el)el.textContent="as of "+asofStr;document.getElementById("projNote").innerHTML="<strong>As of "+asofStr+".</strong> \u201cLocked\u201d = invoiced ("+fmt(BTD)+"). Open pipeline = <strong>"+fmt(openPipe)+"</strong> of open-stage deals. Worst case seeded from your win rate across all "+WR_TOTAL_N+" decided deals.";}
-function render(){renderHeadline();renderKPIs();renderCoverage();renderMix();renderPlan();renderFill();renderWin();renderFunnel();computeProjection();comboChart();comboTable();stateTable();updateProjNote();}
+function render(){renderHeadline();renderKPIs();renderCoverage();renderMix();renderPlan();renderFill();renderWin();renderFunnel();computeProjection();comboChart();comboTable();stateTable();updateProjNote();updateAssumptions();}
 function seedProjection(){document.getElementById("fWorst").value=(WORST_FACTOR*100).toFixed(0);document.getElementById("fBase").value=50;document.getElementById("fBest").value=100;}
 function seedFunnelLeads(){const on=[1,4,5].reduce((s,i)=>s+Math.round(PLAN_DEALS[i]/WR_CNT[i]),0);document.getElementById("fLeads").value=Math.round(Math.round(on/0.50)/0.40);}
 seedProjection(); seedFunnelLeads();
@@ -600,10 +619,23 @@ const STALE_DAYS=14; // warn if no source sheet has been edited in this many day
 const MONTH_IDX={january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11,jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
 function parseNum(x){if(x==null)return 0;var v=parseFloat(String(x).replace(/[^0-9.\-]/g,""));return isNaN(v)?0:v;}
 function monthIndex(s){if(!s)return null;var w=String(s).trim().split(/\s+/)[0].toLowerCase();return (w in MONTH_IDX)?MONTH_IDX[w]:null;}
-function mapProduct(p){p=String(p||"").trim();if(/^nova/i.test(p))return "Nova";if(p==="Holding SPV")return "Custom Service";if(p==="Fund")return "Fund Admin";return p;}
+function normName(s){return String(s||"").toLowerCase().replace(/\s+/g," ").replace(/s$/,"").trim();}
+function mapProduct(p){
+  p=String(p||"").trim();
+  if(/^nova/i.test(p))return "Nova";
+  if(/^holding\s*spv$/i.test(p))return "Custom Service";
+  if(/^fund$/i.test(p))return "Fund Admin";
+  var t=normName(p);
+  for(var i=0;i<PRODUCTS.length;i++){if(normName(PRODUCTS[i])===t)return PRODUCTS[i];}
+  return p; // unmatched -> caller records it as unmapped
+}
 function colIndex(headers,names){for(var i=0;i<headers.length;i++){var h=String(headers[i]||"").toLowerCase().trim();for(var j=0;j<names.length;j++)if(h===names[j])return i;}return -1;}
 let WR_TOTAL_N=49;
+let DATA_WARN=[];
 function parseFeed(feed){
+  DATA_WARN=[];
+  var unknown={};
+  function noteUnknown(src,val){var k=src+"|"+(String(val||"").trim()||"(blank)");unknown[k]=(unknown[k]||0)+1;}
   var S=feed.sources||{}, N=PRODUCTS.length;
   var OPEN={"Discovery":1,"Deal Qualified":1,"Account Activation":1,"Account Activated":1};
   var pv=Array(N).fill(0),pd=Array(N).fill(0),pipeVal=Array(12).fill(0),units=0;
@@ -615,7 +647,7 @@ function parseFeed(feed){
   var H=dz.headers, cN=colIndex(H,["deal name","name"]),cP=colIndex(H,["product type","product"]),cM=colIndex(H,["sales target month","month"]),cT=colIndex(H,["total value","total"]),cW=colIndex(H,["weighted value","weighted"]),cS=colIndex(H,["status","stage"]);
   if(cP<0||cM<0||cW<0||cS<0)throw new Error("deals columns not found");
   dz.rows.forEach(function(r){
-    var pi=PRODUCTS.indexOf(mapProduct(r[cP])); if(pi<0)return;
+    var pi=PRODUCTS.indexOf(mapProduct(r[cP])); if(pi<0){noteUnknown("Deals",r[cP]);return;}
     var mi=monthIndex(r[cM]), wt=parseNum(r[cW]), tot=parseNum(cT>=0?r[cT]:r[cW]), st=String(r[cS]||"").trim();
     // open pipeline: open stage in a month that hasn't closed yet
     if(OPEN[st]&&mi!=null&&mi>=CLOSED_MONTHS){pv[pi]+=wt;pd[pi]+=1;pipeVal[mi]+=wt;pm[pi][mi]+=wt;pmt[pi][mi]+=tot;}
@@ -624,7 +656,7 @@ function parseFeed(feed){
   });
   // --- Billed ---
   var bz=S.billed; if(bz&&bz.ok&&bz.headers){var bH=bz.headers,bP=colIndex(bH,["product"]),bM=colIndex(bH,["month"]),bV=colIndex(bH,["value"]),bU=colIndex(bH,["units","unit"]);
-    bz.rows.forEach(function(r){var pi=PRODUCTS.indexOf(mapProduct(r[bP])),mi=monthIndex(r[bM]);if(pi>=0&&mi!=null){billed[pi][mi]+=parseNum(r[bV]);units+=parseNum(bU>=0?r[bU]:0);}});}
+    bz.rows.forEach(function(r){var pi=PRODUCTS.indexOf(mapProduct(r[bP])),mi=monthIndex(r[bM]);if(pi<0){noteUnknown("Billed",r[bP]);return;}if(mi==null){noteUnknown("Billed month",r[bM]);return;}billed[pi][mi]+=parseNum(r[bV]);units+=parseNum(bU>=0?r[bU]:0);});}
   // --- Quota ---
   var qz=S.quota; if(qz&&qz.ok&&qz.headers){var qH=qz.headers,qM=colIndex(qH,["month"]),qV=colIndex(qH,["quota","value"]);
     qz.rows.forEach(function(r){var mi=monthIndex(r[qM]);if(mi!=null)quota[mi]=parseNum(r[qV]);});}
@@ -634,10 +666,11 @@ function parseFeed(feed){
     var pH2=pz.headers,pP=colIndex(pH2,["product"]),pD=colIndex(pH2,["deals","count","wins"]),pE=colIndex(pH2,["value each","unit value","value"]);
     if(pP>=0&&pD>=0&&pE>=0){
       planV=Array(N).fill(0);planD=Array(N).fill(0);
-      pz.rows.forEach(function(r){var pi=PRODUCTS.indexOf(mapProduct(r[pP]));if(pi<0)return;var dn=parseNum(r[pD]),ea=parseNum(r[pE]);planD[pi]=dn;planV[pi]=dn*ea;});
+      pz.rows.forEach(function(r){var pi=PRODUCTS.indexOf(mapProduct(r[pP]));if(pi<0){noteUnknown("Plan",r[pP]);return;}var dn=parseNum(r[pD]),ea=parseNum(r[pE]);planD[pi]=dn;planV[pi]=dn*ea;});
       if(!planV.some(function(v){return v>0;})){planV=null;planD=null;}
     }
   }
+  Object.keys(unknown).forEach(function(k){var s3=k.split("|");DATA_WARN.push({src:s3[0],name:s3[1],n:unknown[k]});});
   // --- freshness: newest sheet edit across sources ---
   var newest=null;
   ["deals","billed","quota","plan"].forEach(function(k){var s2=S[k];if(s2&&s2.lastUpdated){var t=Date.parse(s2.lastUpdated);if(!isNaN(t)&&(newest===null||t>newest))newest=t;}});
@@ -649,6 +682,15 @@ function parseFeed(feed){
   return {BILLED:billed,BILLED_UNITS_FY:Math.round(units),PIPE_PROD_VAL:pv,PIPE_PROD_DEALS:pd,PIPE_PM:pm,PIPE_PM_TOTAL:pmt,PIPE_VAL:pipeVal,QUOTA:quota,WR_VAL:wrV,WR_CNT:wrC,WR_N:wrN,BLEND_VAL:bV,BLEND_CNT:bC,PLAN_VAL:planV,PLAN_DEALS:planD,sheetsUpdated:newest};
 }
 function applyData(d){if(d.PLAN_VAL&&d.PLAN_DEALS){PLAN_VAL=d.PLAN_VAL;PLAN_DEALS=d.PLAN_DEALS;}BILLED=d.BILLED;BILLED_UNITS_FY=d.BILLED_UNITS_FY;PIPE_PROD_VAL=d.PIPE_PROD_VAL;PIPE_PROD_DEALS=d.PIPE_PROD_DEALS;PIPE_PM=d.PIPE_PM;PIPE_PM_TOTAL=d.PIPE_PM_TOTAL;PIPE_VAL=d.PIPE_VAL;QUOTA=d.QUOTA;WR_VAL=d.WR_VAL;WR_CNT=d.WR_CNT;WR_N=d.WR_N;BLEND_VAL=d.BLEND_VAL;BLEND_CNT=d.BLEND_CNT;}
+function renderWarnings(){
+  var el=document.getElementById("dataWarn");if(!el)return;
+  if(!DATA_WARN.length){el.style.display="none";el.innerHTML="";return;}
+  var total=DATA_WARN.reduce(function(a,b){return a+b.n;},0);
+  el.style.display="block";
+  el.innerHTML='<strong>&#9888; '+total+' source row'+(total===1?"":"s")+' could not be matched and were excluded.</strong> Fix the spelling in the source sheet so they count: '+
+    DATA_WARN.map(function(w){return '<code>'+esc(w.name)+'</code> <span class="wsrc">('+esc(w.src)+" \u00d7"+w.n+')</span>';}).join(", ")+
+    '. Known products: '+PRODUCTS.join(", ")+'.';
+}
 function setStatus(kind,time,sheetsUpdated){var el=document.getElementById("dataStatus");if(!el)return;el.className="data-status "+(kind==="live"?"live":(kind==="snap"?"snap":""));
   if(kind==="live"){
     var t="";try{t=new Date(time).toLocaleString();}catch(e){}
@@ -672,7 +714,7 @@ function loadLive(){
       if(!feed||!feed.sources||feed.ok===false)throw new Error((feed&&feed.error)||"feed unavailable/partial");
       var d=parseFeed(feed);
       if(!d.PIPE_PROD_VAL.some(function(v){return v>0;})&&!d.BILLED.some(function(r){return r.some(function(v){return v>0;});}))throw new Error("empty feed");
-      applyData(d);computeDerived();seedProjection();seedFunnelLeads();render();setStatus("live",feed.generatedAt,d.sheetsUpdated);finish(true);
+      applyData(d);computeDerived();seedProjection();seedFunnelLeads();render();renderWarnings();setStatus("live",feed.generatedAt,d.sheetsUpdated);finish(true);
     }catch(e){finish(false,e&&e.message);}
   };
   s.onerror=function(){finish(false,"script load blocked (host CSP, key, or deployment)");};
